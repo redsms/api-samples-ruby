@@ -5,6 +5,7 @@ import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import subprocess
+from shutil import copytree
 import tempfile
 import threading
 from urllib.parse import parse_qs, urlsplit
@@ -52,21 +53,29 @@ class Handler(BaseHTTPRequestHandler):
 
 with tempfile.TemporaryDirectory() as tmp, HTTPServer(("127.0.0.1", 0), Handler) as server:
     # Run a temporary copy with a loopback address, keeping the published sample pointed at RED SMS.
-    source = Path("client_info.rb")
+    copytree(".", tmp, dirs_exist_ok=True, ignore=lambda _, names: {".git", ".github", "tests"} & set(names))
+    source = Path(tmp, "redsms.rb")
     code = source.read_text().replace("https://cp.redsms.ru/api/", f"http://127.0.0.1:{server.server_port}/api/")
-    Path(tmp, source.name).write_text(code)
+    source.write_text(code)
     env = dict(os.environ, REDSMS_LOGIN="test", REDSMS_API_KEY="dummy", REDSMS_FROM="A & B", REDSMS_TO="+70000000000")
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
-        command = ["ruby", "client_info.rb"]
-        for args, field in [([], "info"), (["send"], "items"), (["status", UUID], "item")]:
-            result = subprocess.run(command + args, cwd=tmp, env=env, check=True, capture_output=True, text=True)
+        info = ["ruby", "client_info.rb"]
+        send = ["ruby", "send_sms.rb"]
+        status = ["ruby", "message_status.rb"] + [UUID]
+        legacy = ["ruby", "client_info.rb"]
+        for command, field in [(info, "info"), (send, "items"), (status, "item"),
+                               (legacy + ["send"], "items"), (legacy + ["status", UUID], "item")]:
+            result = subprocess.run(command, cwd=tmp, env=env, check=True, capture_output=True, text=True, timeout=30)
             assert field in json.loads(result.stdout)
+        invalid = subprocess.run(status[:-1] + ["invalid"], cwd=tmp, env=env, capture_output=True, text=True, timeout=30)
+        assert invalid.returncode != 0, invalid
         env["REDSMS_FROM"] = "reject"
-        result = subprocess.run(command + ["send"], cwd=tmp, env=env, capture_output=True, text=True)
+        result = subprocess.run(send, cwd=tmp, env=env, capture_output=True, text=True, timeout=30)
         assert result.returncode and "420" in result.stderr, result
         assert calls == [("GET", "/api/client/info", 200), ("POST", "/api/message", 200),
+                         ("GET", "/api/message/" + UUID, 200), ("POST", "/api/message", 200),
                          ("GET", "/api/message/" + UUID, 200), ("POST", "/api/message", 420)], calls
     finally:
         server.shutdown()
