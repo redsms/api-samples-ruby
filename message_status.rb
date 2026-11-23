@@ -1,15 +1,35 @@
-require_relative 'redsms'
+require 'net/http'
+require 'digest'
+require 'securerandom'
+require 'json'
 
-def message_status(uuid)
-  unless uuid.match?(/\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/i)
-    raise 'Укажите UUID: ruby message_status.rb UUID'
-  end
-  request_api('GET', 'message/' + uuid, { 'fields' => 'uuid,status,errCode' })
+def required(name)
+  value = ENV[name]
+  raise "Задайте #{name}" if value.nil? || value.empty?
+  value
 end
 
-if $PROGRAM_NAME == __FILE__
-  run do
-    abort 'Использование: ruby message_status.rb UUID' unless ARGV.length == 1
-    message_status(ARGV.first)
+begin
+  abort 'Использование: ruby message_status.rb UUID' unless ARGV.length == 1
+  uuid = ARGV.first
+  unless uuid.match?(/\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/i)
+    abort 'Укажите UUID: ruby message_status.rb UUID'
   end
+  url = URI('https://cp.redsms.ru/api/message/' + uuid)
+  values = 'uuid,status,errCode'
+  url.query = URI.encode_www_form('fields' => values)
+  request = Net::HTTP::Get.new(url)
+  ts = SecureRandom.uuid
+  request['login'] = required('REDSMS_LOGIN')
+  request['ts'] = ts
+  request['sig'] = Digest::MD5.hexdigest(values + ts + required('REDSMS_API_KEY'))
+  Net::HTTP.start(url.host, url.port, use_ssl: url.scheme == 'https', open_timeout: 5, read_timeout: 10) do |http|
+    response = http.request(request)
+    raise "HTTP #{response.code}: #{response.body}" unless response.is_a?(Net::HTTPSuccess)
+    data = JSON.parse(response.body)
+    puts JSON.pretty_generate(data)
+    exit 1 unless data['success'] && Array(data['errors']).empty?
+  end
+rescue StandardError => error
+  abort error.message
 end
