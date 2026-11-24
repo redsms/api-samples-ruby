@@ -12,8 +12,10 @@ end
 begin
   abort 'Использование: ruby send_sms.rb' unless ARGV.length == 0
   url = URI('https://cp.redsms.ru/api/message')
+  recipient = required('REDSMS_TO')
+  abort 'Укажите один номер в международном формате, например +12025550123.' unless /\A[+]?[1-9][0-9]{1,14}\z/.match?(recipient)
   fields = { 'from' => required('REDSMS_FROM'), 'route' => 'sms',
-             'text' => 'Тестовое сообщение от redsms.ru', 'to' => required('REDSMS_TO') }
+             'text' => 'Тестовое сообщение от redsms.ru', 'to' => recipient }
   values = fields.sort.map(&:last).join
   request = Net::HTTP::Post.new(url)
   request.set_form_data(fields)
